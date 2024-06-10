@@ -66,60 +66,75 @@ db.students.aggregate([
 
 // Вывести список студентов для поздравления по месяцам в формате Фамилия И.О., день и название месяца рождения, номером группы и направлением обучения.
 db.students.aggregate([
-    {
-      $project: {
-        _id: 0,
-        Фамилия: { $arrayElemAt: [ { $split: ["$name", " "] }, 0 ] },
-        Инициалы: { $concat: [ { $arrayElemAt: [ { $split: ["$name", " "] }, 1 ] }, " ", { $arrayElemAt: [ { $split: ["$name", " "] }, 2 ] }, "." ] },
-        День: { $dayOfMonth: { $dateFromString: { format: "%Y-%m-%d", date: "$birth" } } },
-        Месяц: { $month: { $dateFromString: { format: "%Y-%m-%d", date: "$birth" } } },
-        "Номер группы": { $arrayElemAt: [ { $split: [ { $arrayElemAt: [{ $split: ["$name", " "] }, 0 ] }, " " ] }, 0 ] },
-        "Направление обучения": { $arrayElemAt: [ { $split: [ { $arrayElemAt: [{ $split: ["$name", " "] }, 0 ] }, " " ] }, 1 ] }
-      }
-    },
-    {
-      $lookup: {
-        from: "groups",
-        localField: "Номер группы",
-        foreignField: "name",
-        as: "groupInfo"
-      }
-    },
-    {
-      $unwind: "$groupInfo"
-    },
-    {
-      $project: {
-        Фамилия: 1,
-        Инициалы: 1,
-        День: 1,
-        Месяц: 1,
-        "Номер группы": "$groupInfo.name",
-        "Направление обучения": "$groupInfo.direction"
-      }
-    },
-    {
-      $sort: { Месяц: 1, День: 1 }
+  {
+    $lookup: {
+      from: "groups",
+      localField: "group_id",
+      foreignField: "_id",
+      as: "group"
     }
-  ])
-
-//  Вывести студентов с указанием возраста в годах.
-db.students.aggregate([
-    {
-      $project: {
-        _id: 0,
-        name: 1,
-        age: {
-          $floor: {
-            $divide: [
-              { $subtract: [ new Date(), new Date("$birth") ] },
-              1000 * 60 * 60 * 24 * 365.25
+  },
+  {
+    $project: {
+      "_id": 0,
+      "name": 1,
+      "birth_day": { $dayOfMonth: { $toDate: "$birth" } },
+      "birth_month": { $month: { $toDate: "$birth" } },
+      "group": { $arrayElemAt: ["$group.name", 0] },
+      "direction": { $arrayElemAt: ["$group.direction", 0] }
+    }
+  },
+  {
+    $addFields: {
+      "birth_month_name": {
+        $let: {
+          vars: {
+            monthsInString: [
+              "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", 
+              "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"
             ]
-          }
+          },
+          in: { $arrayElemAt: ["$$monthsInString", "$birth_month"] }
         }
       }
     }
-  ])
+  },
+  {
+    $project: {
+      "name": 1,
+      "birth_day": 1,
+      "birth_month_name": 1,
+      "group": 1,
+      "direction": 1
+    }
+  },
+  {
+    $sort: {
+      "birth_month": 1,
+      "birth_day": 1
+    }
+  }
+])
+
+
+
+//  Вывести студентов с указанием возраста в годах.
+db.students.aggregate([
+  {
+    $project: {
+      _id: 0,
+      name: 1,
+      age: {
+        $floor: {
+          $divide: [
+            { $subtract: [ new Date(), { $toDate: "$birth" } ] },
+            1000 * 60 * 60 * 24 * 365.25
+          ]
+        }
+      }
+    }
+  }
+]);
 
 // Вывести студентов, у которых день рождения в текущем месяце.
 const currentMonth = new Date().getMonth() + 1
@@ -128,7 +143,7 @@ db.students.aggregate([
     $match: {
       $expr: {
         $eq: [
-          { $month: "$birth" },
+          { $month: { $toDate: "$birth" } },
           currentMonth
         ]
       }
@@ -206,55 +221,72 @@ db.students.aggregate([
 
 // Вывести списки групп каждому предмету с указанием преподавателя.
 db.schedule.aggregate([
-    {
-        $group: {
-            _id: {subject: "$subject", teacher: "$teacher"},
-            groups: { $addToSet: "$group" }
-        }
-    },
-    {
-        $project: {
-            _id: 0,
-            subject: "$_id.subject",
-            teacher: "$_id.teacher",
-            groups: "$groups"
-        }
-    }
+  {
+      $group: {
+          _id: {subject: "$subject", teacher: "$teacher"},
+          groups: { $addToSet: "$group" }
+      }
+  },
+  {
+      $lookup: {
+          from: "groups",
+          localField: "groups",
+          foreignField: "_id",
+          as: "groupInfo"
+      }
+  },
+  {
+      $project: {
+          _id: 0,
+          subject: "$_id.subject",
+          teacher: "$_id.teacher",
+          groups: "$groupInfo.name"
+      }
+  }
 ]).pretty()
 
+
 // Определить, какую дисциплину изучает максимальное количество студентов.
+// Получение общего количества студентов в каждой группе
 const groupCounts = db.groups.aggregate([
-    {
-      $group: {
-        _id: null,
-        totalStudents: { $sum: 1 }
-      }
-    },
-    {
-      $project: {
-        _id: 0,
-        totalStudents: 1
-      }
+  {
+    $group: {
+      _id: null,
+      totalStudents: { $sum: 1 }
     }
-  ]).toArray()[0].totalStudents;
-  
-  const subjectCounts = db.schedule.aggregate([
-    {
-      $group: {
-        _id: "$subject",
-        studentCount: { $sum: groupCounts }
-      }
-    },
-    {
-      $project: {
-        _id: 0,
-        subject: "$_id",
-        studentCount: 1
-      }
+  },
+  {
+    $project: {
+      _id: 0,
+      totalStudents: 1
     }
-  ]).sort({ studentCount: -1 }).limit(1);
-  
-  printjson(subjectCounts.toArray()[0]);
+  }
+]).toArray()[0].totalStudents;
+
+const subjectCounts = db.schedule.aggregate([ // Подсчет количества учащихся по каждому предмету и определение предмета с максимальным количеством учащихся
+  {
+    $group: {
+      _id: "$subject",
+      studentCount: { $sum: groupCounts }
+    }
+  },
+  {
+    $project: {
+      _id: 0,
+      subject: "$_id",
+      studentCount: 1
+    }
+  },
+  {
+    $sort: { studentCount: -1 }
+  },
+  {
+    $limit: 1
+  }
+]).toArray();
+
+printjson(subjectCounts[0]);
+
 
 // Определить сколько студентов обучатся у каждого их преподавателей.
 db.marks.aggregate([
@@ -275,24 +307,25 @@ db.marks.aggregate([
 
 // Определить долю ставших студентов по каждой дисциплине (не оценки или 2 считать не сдавшими).
 db.marks.aggregate([
-    {
-      $group: {
-        _id: { subject: "$subject", term: "$term" },
-        totalStudents: { $addToSet: "$student" },
-        passingStudents: { $addToSet: { $cond: { if: { $gte: ["$mark", 3] }, then: "$student", else: "$$REMOVE" } } }
-      }
-    },
-    {
-      $project: {
-        _id: 0,
-        subject: "$_id.subject",
-        term: "$_id.term",
-        totalStudents: { $size: "$totalStudents" },
-        passingStudents: { $size: "$passingStudents" },
-        passingRate: { $round: { $multiply: [ { $divide: [ { $size: "$passingStudents" }, { $size: "$totalStudents" } ] }, 100 ] } }
-      }
+  {
+    $group: {
+      _id: { subject: "$subject", term: "$term" },
+      totalStudents: { $addToSet: "$student" },
+      passingStudents: { $addToSet: { $cond: { if: { $gte: ["$mark", 3] }, then: "$student", else: "$$REMOVE" } } }
     }
-  ]).pretty()
+  },
+  {
+    $project: {
+      _id: 0,
+      subject: "$_id.subject",
+      term: "$_id.term",
+      totalStudents: { $size: "$totalStudents" },
+      passingStudents: { $size: "$passingStudents" },
+      passingRate: { $round: [{ $divide: [{ $size: "$passingStudents" }, { $size: "$totalStudents" }] }, 3] }
+    }
+  }
+]).pretty()
+
 
 // Определить среднюю оценку по предметам (для сдавших студентов)
 db.marks.aggregate([
@@ -398,71 +431,49 @@ db.marks.aggregate([
 
 // Вывести кандидатов на отчисление (не сдан не менее двух предметов)
 db.students.aggregate([
-    {
+  {
       $lookup: {
-        from: "marks",
-        localField: "_id",
-        foreignField: "student",
-        as: "marks"
+          from: "marks",
+          localField: "_id",
+          foreignField: "student",
+          as: "marks"
       }
-    },
-    {
+  },
+  {
       $unwind: "$marks"
-    },
-    {
+  },
+  {
       $group: {
-        _id: {
-          student: "$name",
-          term: "$marks.term",
-          subject: "$marks.subject"
-        },
-        count: { $sum: 1 }
+          _id: "$_id",
+          name: { $first: "$name" },
+          failedSubjects: {
+              $sum: {
+                  $cond: [{ $lt: ["$marks.mark", 3] }, 1, 0]  // Оценка <3 = несдача
+              }
+          }
       }
-    },
-    {
-      $group: {
-        _id: "$_id.student",
-        terms: { $push: { term: "$_id.term", subject: "$_id.subject" } },
-        count: { $sum: "$count" }
-      }
-    },
-    {
-      $addFields: {
-        failed_count: {
-          $cond: { if: { $lt: ["$count", 10] }, then: 0, else: { $divide: ["$count", 10] } }
-        }
-      }
-    },
-    {
-      $project: {
-        _id: 0,
-        student: "$_id",
-        terms: 1,
-        failed_count: 1,
-        _tmp: {
-          $cond: { if: { $gt: ["$failed_count", 1] }, then: 1, else: 0 }
-        }
-      }
-    },
-    {
-      $addFields: {
-        _tmp2: { $arrayElemAt: ["$_tmp", 0] }
-      }
-    },
-    {
+  },
+  {
       $match: {
-        _tmp2: 1
+          failedSubjects: { $gte: 2 }
       }
-    },
-    {
+  },
+  {
+      $project: {
+          _id: 0,
+          student: "$name",
+          failedSubjects: 1
+      }
+  },
+  {
       $sort: {
-        student: 1
+          student: 1
       }
-    }
-  ])
+  }
+]).pretty()
 
 // Вывести по заданному предмету количество посещенных занятий.
-const subject = "Экономика"; 
+const subject = "Бизнес"; 
 const attendanceRecords = db.attendence.aggregate([
     {
         $lookup: {
@@ -493,10 +504,10 @@ if (attendanceRecords.length > 0) {
     console.log(`Количество посещенных занятий по предмету "${subject}": ${attendanceRecords[0].count}`);
 } else {
     console.log(`Занятий по предмету "${subject}" не найдено.`);
-}
+};
 
 // Вывести по заданному предмету количество пропущенных занятий.
-const subject = "Экономика"; 
+const subject = "Бизнес"; 
 const attendanceRecords = db.attendence.aggregate([
     {
         $lookup: {
@@ -577,80 +588,78 @@ const attendanceStats = db.attendence.aggregate([
 ]).toArray();
 
 console.log(`Количество студентов на занятиях у ${teacher}:`);
-attendanceStats.forEach(stat => {
-  console.log(
-    `Предмет: ${stat.subject}, Дата: ${stat.date.toLocaleDateString()}, Пара: ${stat.number_pair}, Студентов: ${stat.studentCount}`
-  );
-});
+
+if (attendanceStats.length === 0) {
+  console.log(`Нет данных для преподавателя ${teacher}`);
+} else {
+  attendanceStats.forEach(stat => {
+    let dateStr = "";
+    if (stat.date instanceof Date) {
+      dateStr = stat.date.toLocaleDateString();
+    } else if (typeof stat.date === "string") {
+      dateStr = new Date(stat.date).toLocaleDateString();
+    } else {
+      dateStr = "Invalid Date";
+    }
+    
+    console.log(
+      `Предмет: ${stat.subject}, Дата: ${dateStr}, Пара: ${stat.number_pair}, Студентов: ${stat.studentCount}`
+    );
+  });
+}
+
 
 //  Для каждого студента вывести общее время, потраченное на изучение каждого предмета.
 const studyTime = db.attendence.aggregate([
-    {
-      $lookup: {
-        from: "schedule",
-        localField: "schedule",
-        foreignField: "_id",
-        as: "schedule_info"
-      }
-    },
-    {
-      $unwind: "$schedule_info"
-    },
-    {
-      $group: {
-        _id: "$student",
-        totalTime: { $sum: 1 }
-      }
-    },
-    {
-      $lookup: {
-        from: "students",
-        localField: "_id",
-        foreignField: "_id",
-        as: "student_info"
-      }
-    },
-    {
-      $unwind: "$student_info"
-    },
-    {
-      $lookup: {
-        from: "schedule",
-        localField: "schedule",
-        foreignField: "_id",
-        as: "schedule_info"
-      }
-    },
-    {
-      $unwind: "$schedule_info"
-    },
-    {
-      $group: {
-        _id: {
-          student: "$student_info.name",
-          subject: "$schedule_info.subject"
-        },
-        totalTime: { $sum: 1 }
-      }
-    },
-    {
-      $sort: {
-        _id: 1
-      }
-    },
-    {
-      $project: {
-        student: "$_id.student",
-        subject: "$_id.subject",
-        totalTime: "$totalTime"
-      }
+  {
+    $lookup: {
+      from: "schedule",
+      localField: "schedule",
+      foreignField: "_id",
+      as: "schedule_info"
     }
-  ]).toArray();
-  
-  console.log("Общее время, потраченное на изучение каждого предмета для каждого студента:");
-  studyTime.forEach(record => {
-    console.log(
-      `Студент: ${record.student}, Предмет: ${record.subject}, Время (в занятиях): ${record.totalTime}`
-    );
-  });
+  },
+  {
+    $unwind: "$schedule_info"
+  },
+  {
+    $group: {
+      _id: {
+        student: "$student",
+        subject: "$schedule_info.subject"
+      },
+      totalTime: { $sum: 1 }
+    }
+  },
+  {
+    $lookup: {
+      from: "students",
+      localField: "_id.student",
+      foreignField: "_id",
+      as: "student_info"
+    }
+  },
+  {
+    $unwind: "$student_info"
+  },
+  {
+    $sort: {
+      "_id.student": 1,
+      "_id.subject": 1
+    }
+  },
+  {
+    $project: {
+      student: "$student_info.name",
+      subject: "$_id.subject",
+      totalTime: "$totalTime"
+    }
+  }
+]).toArray();
 
+console.log("Общее время, потраченное на изучение каждого предмета для каждого студента:");
+studyTime.forEach(record => {
+  console.log(
+    `Студент: ${record.student}, Предмет: ${record.subject}, Время (в занятиях): ${record.totalTime}`
+  );
+});
